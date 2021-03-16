@@ -1,13 +1,615 @@
-Version: 1.0
+---
+title: "Déchiffrage par algorithme de Métropolis"
+author: "Madeleine Kubasch & Edouard Force"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: yes
+  html_notebook:
+    number_sections: yes
+    toc: yes
+runtime: shiny
 
-RestoreWorkspace: Default
-SaveWorkspace: Default
-AlwaysSaveHistory: Default
+---
 
-EnableCodeIndexing: Yes
-UseSpacesForTab: Yes
-NumSpacesForTab: 2
-Encoding: UTF-8
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+packages_list <- c("ggplot2","stringr","shiny","shinyWidgets","reshape")
+for (one_pack in packages_list) {   ## installation des packages si besoin
+  if (is.element(one_pack,installed.packages())==F) {
+    install.packages(one_pack, repos="http://cran.rstudio.com/")
+  }
+}
+knitr::opts_chunk$set(comment = NA)
+knitr::opts_chunk$set(fig.align = 'center',fig.pos = 'h')
+library(stringr)
+library(shinyWidgets)
+library(reshape)
+library(ggplot2)
+library(shiny)
+load("kubasch_force.RData")
+```
 
-RnwWeave: Sweave
-LaTeX: pdfLaTeX
+
+```{r no_compil, echo=FALSE}
+## Le calcul de la matrice ci-dessous met un certain temps, nous l'avons enregistrée en amont. Si vous voulez la recalculer, décommenter les lignes 37 à 66.
+## codage de la matrice de fréquence à partir d'un texte ci dessous.
+# text <- readLines("kubasch_force_war_and_peace.txt")
+# 
+# nogo <- c("1","2","3","4","5","6","7","8","9","0","&","(","!",")","_","-","$","£","€","%","?",",",".",";","/",":","*","[","]","{","}","=","+","#","\\","\"","\'") ## symbole à éviter
+# 
+# matrice_pair <- matrix(0,27,27)
+# rownames(matrice_pair)=colnames(matrice_pair)=c(LETTERS," ")
+# 
+# for (lin in 1:length(text)) {
+#   X0 <- " "
+#   text[lin] <- toupper(text[lin])
+#   for (i in 1:nchar(text[lin])) {
+#     if (substring(text[lin],i,i) %in% nogo) {  ## symbole à ignorer
+#       substring(text[lin],i,i) <- ""
+#     }
+#     else {
+#       X1 <- substring(text[lin],i,i)
+#       matrice_pair[rownames(matrice_pair)==X0,colnames(matrice_pair)==X1]=matrice_pair[rownames(matrice_pair)==X0,colnames(matrice_pair)==X1]+1
+#       ## on ajoute 1 à chaque fois que l'on retrouve une paire [X0,X1] de lettres ou d'espace.
+#       X0 <- X1
+#     }
+#   }
+#   if (X1 %in% LETTERS){
+#     matrice_pair[rownames(matrice_pair)==X1,27]=matrice_pair[rownames(matrice_pair)==X1,27]+1
+#     ## on ajoute aussi la paire en fin de ligne, qui sont aussi une source d'information.
+#   }
+# }
+# matrice_pair[27,27] <- 0
+# 
+# matrice_pair <- sweep(matrice_pair+1,1,rowSums(matrice_pair+1),FUN="/")
+# matrice_pair <- log(matrice_pair)
+```
+
+
+```{r all_fct, echo=FALSE}
+random_choice <- function() {       ## fonction qui choisit une clé au hasard.
+  result <- list()
+  codage <- sample(LETTERS)
+  j=1
+  for (i in LETTERS) {
+    result[i] <- codage[j]
+    j = j + 1
+  }
+  return(result)
+}
+
+
+encodage <- function(texte,key) {   ## fonction qui crypte le message à l'aide d'une clé.
+  texte <- toupper(texte)
+  codage <- texte
+  n <- nchar(texte)
+    for (i in 1:n) {
+      for (j in 1:26) {
+        if (substring(texte,i,i)==LETTERS[j]){
+          substring(codage,i,i) <- key[[j]]
+        }
+      }
+    }
+  return (codage)
+}
+
+log_score <- function(texte) {    ## fonction qui calcule le log-score d'un texte.
+  texte <- toupper(texte)
+  score <- 0
+  n <- nchar(texte)
+  X1 <- substring(texte,1,1)
+  score <- score + matrice_pair[27,rownames(matrice_pair)==X1]
+  X0 <- substring(texte,n,n)
+  score <- score + matrice_pair[rownames(matrice_pair)==X0,27]
+  for (i in 1:(n-1)) {
+    X0 <- substring(texte,i,i)
+    X1 <- substring(texte,i+1,i+1)
+    score <- score + matrice_pair[rownames(matrice_pair)==X0,colnames(matrice_pair)==X1]
+  }
+  return(score)
+}
+
+key_sample <- function(key,used_caracters){   ## échange de 2 lettres dans une clé.
+  new_key <- key
+  swap.first <- sample(used_caracters,size = 1)    ## choisir une lettre qui est dans le texte
+  swap.second <- swap.first
+  while (swap.second == swap.first) {  
+    swap.second <- sample(LETTERS, 1, replace = FALSE)
+  }
+  intermediaire <- new_key[swap.first]
+  new_key[swap.first] <- new_key[swap.second]
+  new_key[swap.second] <- intermediaire
+  return(new_key)
+}
+
+precision_texte <- function(real_texte,decoding_texte) {   ## fonction pour comparer la proportion de lettres bonnes après déchiffrage.
+  real_texte <- toupper(real_texte)
+  decoding_texte <- toupper(decoding_texte)
+  precision <- 0
+  n <- nchar(real_texte)
+  for (i in 1:n) {
+    if (substring(real_texte,i,i)==substring(decoding_texte,i,i)) {
+      precision <- precision+1
+    }
+  }
+  return(precision/n)
+}
+
+
+```
+
+
+## Contexte et formulation mathématique du problème
+
+
+```{r example, echo=F}
+Example <- random_choice()
+original <- toupper("Enter the hamlet to be or not to be that is the question Whether tis nobler in the mind to suffer The slings and arrows of outrageous fortune Or to take arms against a sea of troubles And by opposing end")
+Code <- encodage(original,Example)
+```
+
+
+L'objectif est de décrypter un message de longueur L où chacune des 26 lettres de l'alphabet a été substituée par une autre lettre, *id est* retrouver la clé de décodage bijective $f \colon \{A,…,Z\} \to \{A,…,Z\}$. On considère également que la langue du message est connue, par exemple qu'il s'agit d'un texte en anglais.
+
+Pour illustrer ce  propos, considérons le message crypté suivant :
+
+```{r, echo=F}
+Code
+```
+
+L'objectif est alors de retrouver la bonne clé de décodage, à savoir :
+
+```{r, echo=F}
+test = matrix(nrow = 1, ncol = 26)
+for (k in 1:26) {test[k] <- LETTERS[k]}
+colnames(test) = sapply(Example,toupper)
+rownames(test) = c("... code pour : ")
+print(test, quote = F)
+```
+afin de pouvoir lire le texte déchiffré :
+
+```{r, echo=F}
+original
+```
+
+Une approche intuitive serait d'essayer différentes clés de décodage proposées aléatoirement, et de voir laquelle est la plus adaptée.
+
+On note $\chi$ l'ensemble des clés de décodage possibles, c'est-à-dire l'ensemble des fonctions bijectives de $\{A,…,Z\}$ dans $\{A,…,Z\}$. Cet ensemble est de cardinal 26! soit environ $4.10^{26}$. Comment parcourir cet espace de façon efficace pour trouver la bonne clé de décodage ?
+
+L'approche présentée ici consiste en l'idée d'exploiter les informations issues de la succession des lettres au sein du texte. 
+Soit $M \colon \{A,…,Z,espace\} \to \{A,…,Z,espace\}$ telle que $M(\alpha,\beta)$ correspond à la fréquence dans la langue anglaise du caractère $\beta$ à la suite du caractère $\alpha$.
+Alors une mesure de probabilité pertinente à considérer pour échantillonner $\chi$ est $\pi \colon \chi \to [0,1]$ définie par l'expression suivante, où $s_i$ désigne le i-ème caractère du message et c la constante de normalisation appropriée :
+
+<center>
+$\pi(f) = \frac{1}{c}\prod_\limits{i = 1}^{L-1}M(f(s_i),f(s_{i+1}))$
+</center>
+
+
+$\pi$ est *a priori* maximale pour les clés de décodage permettant de retrouver un texte ayant les bonnes caractéristiques de la langue anglaise. Si l'on tire aléatoirement des éléments de $\chi$ suivant cette loi de probabilité, c'est donc des clés pertinentes qui ont le plus de chance d'être tirées.
+L'enjeu est donc de simuler une variable aléatoire $X \sim \pi$ afin de parcourir $\chi$ de façon efficace. 
+
+
+## Algorithme de Metropolis
+
+### Le point de départ : les chaînes de Markov
+
+Soit $E$ un espace d'états fini ou dénombrable et $(X_{n})$ une chaîne de Markov de matrice de transition $Q$ irréductible vérifiant la propriété de Doeblin, c'est-à-dire :
+
+**Définition** : $(X_{n})$ vérifie la condition de Doeblin s'il existe $l \geq 1, \alpha > 0,$ et une probabilité c sur E tels que : $\forall x, y \in E, P^{l}(x,y) \geq \alpha c(y)$
+
+En particulier, si E est fini, une chaîne de Markov irréductible vérifie la condition de Doeblin si et seulement si elle est apériodique.
+
+Supposons de plus que $Q$ admet une probabilité invariante $p$, qui est alors unique puisque $Q$ est irréductible. En ce cas, nous avons la propriété suivante :
+
+**Propriété** : Sous les hypothèses précédentes, pour toute loi initiale $\nu$ de $X_0$, la loi de $X_n$ converge en variation totale vers la probabilité invariante $p$.
+
+Ainsi, si l'on parvient à construire une chaîne de Markov $(X_n)$ sur $\chi$ irréductible vérifiant la condition de Doeblin et de mesure invariante $\pi$, alors pour $n$ suffisamment grand, la loi de $X_n$ sera une bonne approximation de $\pi$ peu importe le point de départ $X_0$. Voyons donc comment construire une telle chaîne de Markov, c'est-à-dire comment construire une matrice de transtion $Q$ ayant les bonnes propriétés, grâce à l'algorithme de Metropolis.
+
+### Algorithme de Metropolis : théorie et implémentation
+
+Considérons le cas général d'un espace d'état E fini et soit $p$ une probabilité sur E (autre que la probabilité uniforme) qui charge tous les points de E, c'est-à-dire telle que : $p(x) > 0 \space \forall x \in E$. L'objectif est de construire la matrice de transition $Q$ d'une chaîne de Markov irréductible vérifiant la propriété de Doeblin et admettant $p$ comme unique probabilité invariante.
+
+Soit $P$ une matrice stochastique irréductible et symétrique sur E, c'est-à-dire vérifiant $\forall x,y \in E, \space P(x,y) = P(y,x)$.
+$P$ est appelée matrice de proposition, et sert à parcourir l'espace d'états E à chaque étape de l'algorithme.
+
+Alors on pose la matrice de transition suivante : 
+<center>
+$Q(x,y) = \min(\frac{p(y)}{p(x)},1)P(x,y) \text{ si } x ≠ y \\ Q(x,x) = 1 - \sum_\limits{y \in E \setminus\{x\}}Q(x,y)$
+</center>
+
+**Propriété** : Sous les hypothèses précédentes, $Q$ est irréductible apériodique donc vérifie la condition de Doeblin. Une chaîne de Markov de matrice de transition $Q$ converge ainsi en variation totale vers son unique probabilité invariante qui est $p$.
+
+Comment procéder concrètement pour simuler une chaîne de Markov de matrice de transition $Q$ ? 
+
+- Initialisation : on choisit aléatoirement $X_0 = x_0 \in E$
+
+- À chaque itération:
+
+    1. On propose $y \in E$ avec probabilité $P(x_n,y)$.
+    
+    2. On détermine la valeur de $X_{n+1}$ :
+    + Si $p(y) > p(x_n)$ on accepte la nouvelle valeur : $X_{n+1} = y$. 
+    
+    + Sinon, avec probabilité $\frac{p(y)}{p(x_n)}$ on l'accepte et on pose $X_{n+1} = y$. Autrement on rejette la proposition et alors $X_{n+1} = x_n$.
+
+Il suffit alors de repéter cette itération un grand nombre de fois pour que la loi de $X_n$ soit proche de $p$, et donc pour simuler $X \sim p$. 
+Utilisons maintenant cette méthode pour répondre à notre problématique.
+
+
+## Mise en œuvre de l'algorithme de Metropolis pour le déchiffrage
+
+### Réécriture de l'algorithme dans notre contexte
+
+Comme nous l'avons vu dans la section précédente, il est nécessaire de choisir une matrice de propositions $P$ sur $\chi$ l'ensemble des clés de décodage.
+Pour ce faire, nous avons décidé qu'à partir d'une clé initiale $f$, une nouvelle clé $f^*$ est proposée en permutant les valeurs codées par deux symboles. Afin de ne pas proposer de changement de clé n'affectant pas le décodage du message, nous imposons qu'au moins un des deux symboles dont la valeur est permutée soit effectivement utilisé dans le message codé.
+Toutes les permutations permises sont équiprobables. En effet, si le message codé contient $m$ caractères différents, chaque permutation consiste à choisir uniformément un symbôle parmi les m utilisés avec probabilité $\frac{1}{m}$, puis de choisir un symbôle parmi les 25 restants uniformément encore. Toutes les permutations permises sont donc de probabilité $\frac{1}{25m}$.
+Par conséquent il est clair que P est symétrique, puisque pour revenir de $f^*$ à $f$, il suffit de faire la permutation inverse. P est également clairement irréductible, puisqu'il suffit d'enchaîner les permutations paire par paire pour passer d'une clé à une autre. Il s'agit donc d'un choix convenable de matrice de proposition.
+
+Ainsi, la matrice de transition suivante a pour probabilité invariante $\pi$ :
+
+<center>
+$Q(f,f^*) = \frac{1}{25m} \min\Bigg(\frac{\prod_\limits{i = 1}^{i=L-1}M(f^*(s_i),f^*(s_{i+1}))}{\prod_\limits{i = 1}^{i=L-1}M(f(s_i),f(s_{i+1}))},1\Bigg)  \\ Q(f,f) = 1 - \sum_\limits{f^* \in \chi \setminus\{f\}}Q(f,f^*)$
+</center>
+
+On remarquera notamment qu'il n'est pas nécessaire de connaître la valeur de la constante de normalisation $c$ apparaissant dans la définition de $\pi$.
+
+Nous pouvons alors implémenter l'algorithme de Metropolis, comme décrit précédemment, à condition notamment d'avoir à notre disposition la matrice M des fréquences de paires de lettres.
+
+### Quelques aspects pratiques de l'implémentation
+
+#### Génération de la matrice M des fréquences de paires de lettres
+
+Afin de déterminer les probabilités de transition entre paires de caractères, nous les avons estimées à partir d'un long texte en anglais, en l'occurrence à partir du roman *War and Peace* de Léo Tolstoï. 
+La matrice M est donc obtenue en comptabilisant le nombre d'occurrences de chaque couple, puis en normalisant chaque ligne $M(\alpha,\cdot)$ par la somme de ses valeurs.  
+La matrice obtenue peut être visualisée comme suit :
+
+
+```{r pressure, echo=FALSE, out.width = '70%'}
+## représentation de la matrice :
+represent_matrice <- exp(matrice_pair)
+ggplot(melt(represent_matrice),aes(X2,X1))+geom_tile(aes(fill=value))+
+  scale_fill_gradient(low="white",high="black",limits=c(0,1))+
+  labs(x="Fr\u00e9quence de la lettre suivante",y="Premi\u00e8re lettre",fill="Probabilit\u00e9")+
+  scale_y_discrete(limits = rev(levels(melt(represent_matrice)$X2)))+
+  coord_equal()
+
+
+```
+
+
+#### Mesure d'optimisation
+
+L'algorithme de Metropolis permet de simuler une variable aléatoire de loi $\pi$ sur $\chi$. Ceci ne répond toutefois pas exactement à notre problème : nous cherchons à retenir la meilleur clé de décodage, et non seulement une clé quelconque choisie selon $\pi$ qui peut ne pas être performante.
+Pour ce faire, nous avons donc décidé de fixer un critère de qualité d'une clé de décodage, qui correspond à la probabilité en langue anglaise d'observer le texte décodé en tenant compte des probabilités de transitions entre caractères : 
+
+<center>
+$qualité(f) = \prod_\limits{i = 1}^{i=L-1}M(f(s_i),f(s_{i+1}))$
+</center>
+
+
+
+C'est évidemment à pondération près $\pi(f)$, puisque c'est bien pour mesurer cette qualité que cette probabilité a été introduite.
+Le diagramme suivant qui représente la précision au cours des itérations permet bien d'illustrer que la qualité du décodage augmente globalement, mais fluctue voire diminue légèrement vers la fin, puisqu'à chaque étape, des clés de moindre qualité peuvent être proposées et retenues par l'algorithme.
+
+
+```{r plot_prec, echo = F, out.width = '70%'}
+cat("Exemple d'application de l'algorithme avec : ",original)
+ggplot(data.frame(ite = 1:length(Prec), precision = Prec),
+       aes(x = ite, y = precision)) +
+  geom_line() + geom_point(aes(which.max(Prec),max(Prec)),colour="red") +
+  geom_hline(yintercept = 0, size=1) +
+  geom_vline(xintercept = 0, size=1) +
+  geom_text(aes(4200,0.965),label="Max",size=3.5,colour="red") + ylim(0,1) + labs(title='\u00c9volution de la pr\u00e9cision',
+                                 subtitle='pour 5000 it\u00e9rations', 
+                                 x = "It\u00e9rations",
+                                 y="Pr\u00e9cision")
+
+```
+
+
+*Remarque :* Afin de visualiser la qualité du décodage par l'algorithme, deux critères sont ici présentés, à savoir la qualité introduite précédemment, et la précision que nous définissons comme la proportion de lettres correctement décodées au sein du texte.
+
+Par conséquent, à chaque itération ce score est calculé, et la clé retenue à la fin est simplement la clé ayant obtenu la meilleur qualité de décodage.
+
+*Remarque :* R utilise un encodage IEEE 754 double précision des flottants, ce qui permet d'encoder un plus petit réel positif de l'ordre de $10^{-323}$. Étant donné que les fréquences observées dans $M$ sont généralement très faibles, il y a un risque non négligeable d'erreur d'arrondi à 0 lors du calcul de la qualité pour des textes longs. Pour remédier à cela, nous avons donc décider de calculer un log-score en prenant le logarithme népérien de la qualité, qui devient donc :
+
+<center>
+$logscore(f) = \sum_\limits{i = 1}^{i=L-1}log(M(f(s_i),f(s_{i+1})))$
+</center>
+<br />
+
+On peut tester l'algorithme avec deux phrases de différentes tailles :
+
+
+```{r length, echo = F}
+longtext <- toupper("As Oliver gave this first proof of the free and proper action of his lungs the patchwork coverlet which was carelessly flung over the iron bedstead rustled the pale face of a young woman was raised feebly from the pillow and a faint voice imperfectly articulated the words Let me see the child and die The surgeon had been sitting with his face turned towards the fire giving the palms of his hands a warm and a rub alternately As the young woman spoke he rose and advancing to the bed head said with more kindness than might have been expected of him")
+shorttext <- toupper("Enter the hamlet to be or not to be that is the question Whether tis nobler in the mind to suffer The slings and arrows of outrageous fortune Or to take arms against a sea of troubles And by opposing end")
+long <- nchar(longtext)
+short <- nchar(shorttext)
+```
+
+```{r , echo=F}
+longtext
+```
+
+
+```{r , echo=F}
+shorttext
+```
+
+### __*Application*__
+
+
+```{r shiny_part, echo=FALSE}
+ui <- fluidPage(
+  h2("Initialisation"),
+   sidebarLayout(
+     sidebarPanel(
+      helpText("Entrer votre texte ci-dessous et g\u00e9n\u00e9rer un cl\u00e9.(On peut copier/coller les phrases ci dessus)"),
+      textAreaInput("texte", "Texte \u00e0 decoder : ",toupper("As Oliver gave this first proof of the free and proper action of his lungs the patchwork coverlet which was carelessly flung over the iron bedstead rustled the pale face of a young woman was raised feebly from the pillow and a faint voice imperfectly articulated the words Let me see the child and die The surgeon had been sitting with his face turned towards the fire giving the palms of his hands a warm and a rub alternately As the young woman spoke he rose and advancing to the bed head said with more kindness than might have been expected of him"),height=250, width = "100%"),
+      actionButton("button", "G\u00e9n\u00e9rer une cl\u00e9 et voir le texte",
+             style = "background-color:#FFFAFA;
+                      color:#0044FF;
+                      border-color:#FF0000;
+                      border-style:double;
+                      border-width:5px;
+                      border-radius:10%;
+                      font-size:14px;")
+     ),
+    mainPanel(
+      textOutput("enter_text"),
+      textOutput("la_cle"),
+      textOutput("lettres"),
+      textOutput("generate_key"),
+      br(),
+      textOutput("And"),
+      textOutput("crypted_texte")
+      )
+  ),
+  br(),
+  br(),
+  h2("Algorithme"),
+  sidebarLayout(
+    sidebarPanel(
+      helpText("L'algorithme peut prendre un certain temps."),
+      sliderInput("N","Nombre d'it\u00e9rations :", min = 100,  max = 10000, value = 5000,step = 100),
+      actionButton("bouton_Metro", "D\u00e9marrer",
+             style = "background-color:#FFFAFA;
+                      color:#3300FF;
+                      border-color:#FF0000;
+                      border-style:double;
+                      border-width:5px;
+                      border-radius:10%;
+                      font-size:14px;")
+    ),
+    
+    mainPanel(
+      textOutput("no_accept"),
+      verbatimTextOutput("resultat")
+    )
+  ),
+  br(),
+  br(),
+  mainPanel(verbatimTextOutput("Finale"),
+    fluidRow(align="center",
+      splitLayout(cellWidths = c("60%", "60%"), plotOutput("plot_prec"), plotOutput("plot_score"))
+    
+  ))
+      
+ )
+  
+
+
+
+
+
+server <- function(input, output,session) {
+  
+  ## liste des valeurs 
+  resultat_texte <- reactiveValues()
+  first_key <- reactiveValues()
+  message_crypte <- reactiveValues()
+  key <- reactiveValues()
+  txt <- reactiveValues()
+  max_key <- reactiveValues()
+  new_key <- reactiveValues()
+  score <- reactiveValues()
+  max_score <- reactiveValues()
+  vect_precision <- reactiveValues()
+  vect_score <- reactiveValues()
+  new_texte <- reactiveValues()
+  nb_iter <- reactiveValues()
+  decrypt_iter <- reactiveValues()
+  
+ observeEvent(input$button, {
+   if(nchar(input$texte) <= 2) {    ## Si le texte n'est pas assez long
+     output$enter_text <- renderText({
+       "Entrer un texte plus long"
+     })
+   }
+   else if (str_detect(input$texte, pattern = "[^AZERTYUIOPQSDFGHJKLMWXCVBNazertyuiopqsdfghjklmwxcvbn ]")) {
+     output$enter_text <- function(){return("Caract\u00e8res sp\u00e9ciaux interdits.")}
+     output$la_cle <- renderText({
+       ""
+     })
+     output$lettres <- renderText({
+       ""
+     })
+     output$generate_key <- renderText({
+       ""
+     })
+     output$crypted_texte <- renderText({
+       ""
+     })
+     output$And <- renderText({
+       ""
+     })
+   }
+   else {
+     output$enter_text <- renderText({
+       ""
+     })
+    key$first_key <- random_choice()
+    txt$message_crypte <- encodage(input$texte,key$first_key)
+
+    output$la_cle <- function(){return("La cl\u00e9 de d\u00e9chiffrage est donc :")}
+    output$lettres <- renderPrint({
+      cat(paste(key$first_key))
+      
+    })
+  output$generate_key <- renderPrint({
+      cat(LETTERS)
+    })
+  
+  output$crypted_texte <- renderPrint({
+    cat(txt$message_crypte)
+  })
+  output$And <- function(){return("Le message crypt\u00e9 est donc : ")}
+   }
+ })
+ 
+ 
+  
+  observeEvent(input$bouton_Metro, {
+    if(input$button == FALSE || length(key$first_key)==0){
+      output$no_accept <- function(){    ## Si on exécute avant de générer une clé
+        return("G\u00e9n\u00e9rer une cl\u00e9 auparavant !")
+      }
+    }
+    else {
+      output$no_accept <- renderText({ 
+        ""
+      }) 
+    withProgress(message = 'Ex\u00e9cution', value = 0, {
+    
+    # Initialisation
+    max_key <- key$first_key
+    new_key <- key$first_key
+    old_key <- key$first_key
+    score <- log_score(txt$message_crypte)    
+    max_score <- score
+    # Stockage
+    vect_precision <- precision_texte(txt$message_crypte,input$texte)
+    vect_score <- score
+    i <- 1
+    nb_iter <- NULL
+    decrypt_iter <- NULL
+    
+    texte <- toupper(txt$message_crypte)
+    A <- gsub("[^a-zA-Z]", "",texte)
+    used_crypted_carac <- unique(substring(A,1:nchar(A),1:nchar(A))) # Caracteres effectivement utilises dans le codage
+    
+    ## début de l'algo
+    while (i <=input$N) {
+    new_key <- key_sample(old_key,used_crypted_carac)    # Proposition d'une nouvelle clé
+    new_texte <- encodage(txt$message_crypte,new_key)
+    new_score <- log_score(new_texte)
+
+    if (new_score >= score || log(runif(1)) <= new_score-score) { # Vu que nous passons par le log, on applique également le log sur l'uniforme[0;1]
+      old_key <- new_key
+      score <- new_score
+      if (score >= max_score) {   # on stock la meilleure clé
+        max_score <- score
+        max_key = old_key
+      }
+    }
+    vect_score <- c(vect_score,score)
+    vect_precision <- c(vect_precision,precision_texte(input$texte,encodage(txt$message_crypte,old_key)))
+    if (i %% 400==0 || i==input$N) {    # on affiche les propositions de déchiffrage toutes les 400 itérations, et à la dernière.
+      nb_iter <- c(nb_iter,i)
+      decrypt_iter <- c(decrypt_iter,encodage(txt$message_crypte,old_key))
+    }
+    E <- paste("\nIterations: ",i)
+    M <- paste(floor(i*100/input$N),"%")
+    incProgress(1/input$N, detail = paste(M,E))
+    i = i + 1
+    }
+    resultat_texte <- encodage(txt$message_crypte,max_key)
+
+    output$resultat <- function(){
+      D <- ""
+      for (k in 1:length(nb_iter)){
+        A <- paste(nb_iter[k],"it\u00e9rations :",sep = "\t")
+        B <- paste(decrypt_iter[k],"\n")
+        C <- paste(A,B,sep = '\n')
+        D <- paste(D, C, sep = "")
+      }
+      return(D)
+      #C <- paste(" ")
+      #cat(C,"\n")
+    }
+    
+        
+    output$Finale <- function(){
+      B <- paste("R\u00e9sultat final ", resultat_texte,sep = "\n")
+      cat(B,"\n")
+      return(B)
+    }
+
+    
+    output$plot_prec <- renderPlot({
+      ggplot(data.frame(ite = 1:(input$N+1), precision = vect_precision),
+       aes(x = ite, y = precision)) +
+  geom_line() + geom_point(aes(which.max(vect_precision),max(vect_precision)),colour="red") +
+  geom_hline(yintercept = 0, size=1) +
+  geom_vline(xintercept = 0, size=1) +
+  ylim(0,1) + labs(title='\u00c9volution de la pr\u00e9cision',
+                                 subtitle=paste('pour', input$N, ' it\u00e9rations'), 
+                                 x = "It\u00e9rations",
+                                 y="Pr\u00e9cision")
+
+    })
+    
+    output$plot_score <- renderPlot({
+      ggplot(data.frame(ite = 1:(input$N+1), precision = vect_score),
+       aes(x = ite, y = precision)) +
+  geom_line() + geom_point(aes(which.max(vect_score),max(vect_score)),colour="red") +
+  geom_hline(yintercept = 0, size=1) +
+  geom_vline(xintercept = 0, size=1) +
+  labs(title='\u00c9volution du Log-score',
+                                 subtitle=paste('pour', input$N, ' it\u00e9rations'), 
+                                 x = "It\u00e9rations",
+                                 y="Log-Score")
+    })
+    
+  })
+    }
+  })
+}
+
+
+
+
+
+
+shinyApp(ui, server, options = list(height = 1500))
+```
+
+
+
+
+### Limites de l'algorithme 
+
+
+Un désavantage majeur de l'algorithme de Metropolis est l'absence de critère d'arrêt *a priori* : il est impossible de prédire le nombre d'itérations qu'il faut pour être "suffisamment proche de $\pi$". 
+En pratique, ce nombre d'itérations dépend de la quantité d'information contenue dans le texte.
+
+```{r comparaison_plot, echo=F,height=80}
+par(mfrow=c(1,2),oma = c(0, 0, 2, 0))
+hist(MCMC_hist_hamlet,main = paste("Texte de ",short," caract\u00e8res"),cex.main = 0.8,xlab = "Pr\u00e9cision",ylab = "Nombre d'ex\u00e9cutions",ylim = c(0,120))
+hist(MCMC_hist_oliver,main = paste("Texte de ",long," caract\u00e8res"),cex.main = 0.8,xlab = "Pr\u00e9cision",ylab = "Nombre d'ex\u00e9cutions",ylim = c(0,120))
+mtext("Histogramme de la pr\u00e9cision du d\u00e9cryptage par l'algorithme\npour 200 ex\u00e9cutions de 5000 it\u00e9rations chacune", outer = TRUE, cex = 1)
+```
+
+Par exemple, la longueur du texte est un facteur majeur, comme l'illustrent les distributions des précisions de décodage obtenues pour deux textes, l'un de `r short`, l'autre de `r long` caractères. L'efficacité de l'algorithme est supérieure pour le texte long. Cela se comprend très bien, puisqu'un texte long contient plus de paires de transitions en général, donc de base plus d'informations ressenties par l'algorithme. 
+D'autre part, il peut aussi arriver que certaines lettres en particulier sont rarement décodées correctement, comme par exemple la lettre "q" dans la phrase tirée de *Hamlet* : la lettre étant présente une seule fois, un bon ou mauvais décodage de celle-ci n'aura que très peu d'impact sur la qualité globale du déchiffrage. L'algorithme sera donc peu sensible aux erreurs de décodage de la lettre "q".
+
+Une façon de remédier à ce problème serait de considérer les triplets de lettres plutôt que les doublets, puisque cela permettrait de capter plus d'informations encore.
+
+
+## Bibliographie
+- "The Markov Chain Monte Carlo Revolution", Persi Diaconis, Bull. Amer. Math. Soc. 46 (2009), 179-205.
+- Polycopié du cours "Probabilités numériques et statistiques computationnelles", Partie "Probabilité numérique", Vincent Lemaire et Pierre Monmarché, Sorbonne Université, 2020
+
+
